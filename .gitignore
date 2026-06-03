@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/cache/
+notebooks/*.png
+
+# Outputs generados (reproducibles desde los notebooks)
+outputs/
+
+# Datos de censo regional (solo se usan para generar los datos de Peñalolén;
+# los archivos procesados ya están en data/processed/)
+data/raw/Cartografía_censo2024_R13_Zonal.parquet
+data/raw/Cartografía_censo2024_R13_Comunal.parquet
+
+# Scripts temporales de verificación
+run_check.py
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+
+# IDEs
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,10 @@
+vuln_group,purpose_group,n,mean_time,median_time,p25,p75
+baja,compras_tramites,429,11.624708624708624,10.0,5.0,15.0
+baja,salud,22,18.045454545454547,15.0,10.0,25.0
+baja,social_recreacion,113,14.761061946902656,10.0,5.0,20.0
+media,compras_tramites,494,12.773279352226721,10.0,5.0,15.0
+media,salud,31,20.193548387096776,15.0,12.5,27.5
+media,social_recreacion,111,14.603603603603604,10.0,6.5,20.0
+alta,compras_tramites,665,12.634586466165414,10.0,5.0,15.0
+alta,salud,55,18.70909090909091,15.0,10.0,25.0
+alta,social_recreacion,129,20.5968992248062,15.0,10.0,20.0
