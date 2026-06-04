@@ -55,10 +55,17 @@ class SimConfig:
     step_min:      int   = 1            # minutes per timestep
 
     # ── Walking speed ──────────────────────────────────────────────────────
-    walk_speed_m_min: float = 65.0
-    # ~3.9 km/h.  Bohannon 1997 (Phys Ther): mean comfortable walking speed
-    # for 60–79-year-olds ≈ 1.15 m/s = 69 m/min.  Using 65 as conservative
-    # lower bound pending vuln-group differentiation (Day 4).
+    walk_speed_m_min: float = 62.0
+    # Fallback when vuln_group not found in walk_speed_by_vuln.
+
+    walk_speed_by_vuln: dict = field(
+        default_factory=lambda: {'baja': 68.0, 'media': 60.0, 'alta': 52.0}
+    )
+    # Per-group walking speed (m/min).
+    # Refs: Bohannon (1997) Phys Ther; Studenski et al. (2011) JAMA.
+    # baja  → 68 m/min (~4.1 km/h): comfortable pace, no functional limitation.
+    # media → 60 m/min (~3.6 km/h): mild limitations, cautious gait.
+    # alta  → 52 m/min (~3.1 km/h): frail/limited, gait speed < 1.0 m/s.
 
     # ── Departure distribution (truncated normal, absolute minutes of day) ─
     dep_mean_min:  int   = 9 * 60       # 09:00 — model assumption (no EOD data)
@@ -67,23 +74,29 @@ class SimConfig:
     dep_late_min:  int   = 12 * 60      # 12:00 upper bound
 
     # ── Dwell time at destination (uniform, minutes) ───────────────────────
-    dwell_min_min: int   = 20
+    dwell_min_min: int   = 20           # fallback for unknown purposes
     dwell_max_min: int   = 60
-    # Declared simplification: does not vary by purpose.
-    # To be refined with Chilean time-use surveys (Day 4).
+
+    dwell_by_purpose: dict = field(
+        default_factory=lambda: {
+            'salud':        (45, 90),   # Ref tentativa: EOD 2012, visitas médicas
+            'comercio':     (25, 50),   # Ref tentativa: EOD 2012, compras/trámites
+            'areas_verdes': (15, 40),   # Ref tentativa: EOD 2012, recreación
+        }
+    )
 
     # ── WBGT heat model ────────────────────────────────────────────────────
-    wbgt_umbral_base: float = 26.0
-    # °C — baseline WBGT threshold for older adults (sedentary/light activity).
-    # ISO 7243 sets ~28 °C for light work (general population);
-    # reduced to 26 °C for older/sedentary population (to refine with literature).
+    wbgt_umbral_base: float = 27.0
+    # °C — baseline WBGT threshold for older adults (light activity outdoors).
+    # Ref: NIOSH (2016) work limits, light work non-acclimatized: ~27–28 °C.
+    # Kenney & Munce (2003): thermoregulatory capacity reduced in older adults.
 
     vuln_delta: dict = field(
-        default_factory=lambda: {'baja': 0.0, 'media': 1.0, 'alta': 2.0}
+        default_factory=lambda: {'baja': 0.0, 'media': 1.5, 'alta': 3.0}
     )
     # Threshold reduction per vulnerability group (°C).
-    # alta → effective threshold = 24 °C (heat stress begins sooner).
-    # Pending calibration with geriatric heat-physiology literature (Day 4).
+    # Ref: Kenney & Munce (2003) J Appl Physiol — reduced heat tolerance in elderly.
+    # alta → effective threshold = 24 °C; media → 25.5 °C; baja → 27 °C.
 
     # ── NDVI cooling ───────────────────────────────────────────────────────
     ndvi_alpha: float = 2.5
@@ -263,8 +276,27 @@ def build_agents(walkers:  pd.DataFrame,
     dep_abs = np.clip(raw, config.dep_early_min, config.dep_late_min).round().astype(int)
     agents['departure_step'] = dep_abs - config.day_start_min
 
-    # Dwell time (uniform random, in steps = minutes)
-    agents['dwell_steps'] = rng.integers(config.dwell_min_min, config.dwell_max_min + 1, size=n)
+    # Walk speed per agent (m/min) — varies by vulnerability group
+    # Refs: Bohannon (1997), Studenski et al. (2011)
+    agents['walk_speed_m_min'] = (
+        agents['vuln_group']
+        .map(config.walk_speed_by_vuln)
+        .fillna(config.walk_speed_m_min)
+    )
+
+    # Dwell time per agent (minutes) — varies by purpose of trip
+    dwell_steps = np.full(n, config.dwell_min_min, dtype=int)
+    for purpose, (dmin, dmax) in config.dwell_by_purpose.items():
+        mask = (agents['purpose_group_model'] == purpose).values
+        if mask.any():
+            dwell_steps[mask] = rng.integers(dmin, dmax + 1, size=int(mask.sum()))
+    # Fallback for unrecognised purposes
+    unknown = ~agents['purpose_group_model'].isin(config.dwell_by_purpose)
+    if unknown.any():
+        dwell_steps[unknown.values] = rng.integers(
+            config.dwell_min_min, config.dwell_max_min + 1, size=int(unknown.sum())
+        )
+    agents['dwell_steps'] = dwell_steps
 
     # NDVI cooling: additive WBGT reduction (°C) for this agent's route
     ndvi_n = ((agents['ndvi_route'] - ndvi_min) / (ndvi_max - ndvi_min + 1e-9)).clip(0, 1)
@@ -317,7 +349,9 @@ def step(agents:       pd.DataFrame,
     walking = agents['status'] == 'caminando'
     if walking.any():
         remaining = agents.loc[walking, 'route_length_m'] - agents.loc[walking, 'distance_traveled']
-        advance   = np.minimum(config.walk_speed_m_min * config.step_min, remaining)
+        advance   = np.minimum(
+            agents.loc[walking, 'walk_speed_m_min'] * config.step_min, remaining
+        )
         agents.loc[walking, 'distance_traveled'] += advance
 
         wbgt_eff = wbgt_now - agents.loc[walking, 'ndvi_cooling']
@@ -343,7 +377,9 @@ def step(agents:       pd.DataFrame,
     returning = agents['status'] == 'volviendo'
     if returning.any():
         remaining_ret = agents.loc[returning, 'route_length_m'] - agents.loc[returning, 'distance_traveled']
-        advance_ret   = np.minimum(config.walk_speed_m_min * config.step_min, remaining_ret)
+        advance_ret   = np.minimum(
+            agents.loc[returning, 'walk_speed_m_min'] * config.step_min, remaining_ret
+        )
         agents.loc[returning, 'distance_traveled'] += advance_ret
 
         wbgt_eff_ret = wbgt_now - agents.loc[returning, 'ndvi_cooling']
