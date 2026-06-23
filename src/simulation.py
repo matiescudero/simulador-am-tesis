@@ -435,3 +435,92 @@ def run(agents:         pd.DataFrame,
             snapshots.append(snap)
 
     return agents, snapshots
+
+
+# ---------------------------------------------------------------------------
+# Multi-day run
+# ---------------------------------------------------------------------------
+
+def run_multiday(agents:          pd.DataFrame,
+                 wbgt_profiles:   list,
+                 config:          SimConfig = DEFAULT_CFG,
+                 snapshot_every:  int   = 15,
+                 nocturnal_decay: float = 0.80,
+                 seed:            int   = 42) -> tuple:
+    """
+    Run simulation for N consecutive days with nocturnal heat_load decay.
+
+    Each day, agents reset their movement state and receive new departure/dwell
+    times (stochastic re-draw). heat_load carries over between days after
+    applying a nocturnal decay:
+
+        heat_load_next_day = heat_load_end_of_day × (1 − nocturnal_decay)
+
+    Physiological justification: nocturnal_decay = 0.80 means 80 % of the
+    accumulated thermal load dissipates during rest at home (partial recovery
+    in older adults — Kenney & Munce 2003). 20 % persists as carry-over,
+    representing residual thermoregulatory stress.
+
+    Parameters
+    ----------
+    agents          : initialized DataFrame from build_agents()
+    wbgt_profiles   : list of np.ndarray, one per day, shape (config.n_steps,)
+                      len(wbgt_profiles) determines the number of simulated days.
+    nocturnal_decay : fraction of heat_load that dissipates overnight (0 – 1)
+    seed            : base seed; day d uses seed + d × 1000
+
+    Returns
+    -------
+    agents        : pd.DataFrame  final state after all days
+    all_snapshots : list[pd.DataFrame]  snapshots with 'day' column added
+    day_finals    : list[pd.DataFrame]  final agent state at end of each day
+                    (captured BEFORE nocturnal decay — useful for per-day analysis)
+    """
+    all_snapshots: list = []
+    day_finals:    list = []
+
+    for day_idx, wbgt_profile in enumerate(wbgt_profiles):
+        # ── Reset dynamic movement state for new day ──────────────────────────
+        agents['status']            = 'en_casa'
+        agents['distance_traveled'] = 0.0
+        agents['arrival_step']      = -1
+
+        # Re-sample stochastic parameters (new draws each day)
+        rng = np.random.default_rng(seed + day_idx * 1000)
+        n   = len(agents)
+
+        raw     = rng.normal(loc=config.dep_mean_min, scale=config.dep_std_min, size=n)
+        dep_abs = np.clip(raw, config.dep_early_min, config.dep_late_min).round().astype(int)
+        agents['departure_step'] = dep_abs - config.day_start_min
+
+        dwell_steps = np.full(n, config.dwell_min_min, dtype=int)
+        for purpose, (dmin, dmax) in config.dwell_by_purpose.items():
+            mask = (agents['purpose_group_model'] == purpose).values
+            if mask.any():
+                dwell_steps[mask] = rng.integers(dmin, dmax + 1, size=int(mask.sum()))
+        unknown = ~agents['purpose_group_model'].isin(config.dwell_by_purpose)
+        if unknown.any():
+            dwell_steps[unknown.values] = rng.integers(
+                config.dwell_min_min, config.dwell_max_min + 1, size=int(unknown.sum())
+            )
+        agents['dwell_steps'] = dwell_steps
+
+        # ── Simulate one full day ─────────────────────────────────────────────
+        for s in range(config.n_steps):
+            agents = step(agents, s, wbgt_profile, config)
+
+            if s % snapshot_every == 0:
+                snap         = agents[_SNAP_COLS].copy()
+                snap['step'] = s
+                snap['time'] = step_to_time(s, config)
+                snap['day']  = day_idx + 1
+                all_snapshots.append(snap)
+
+        # Save final state of this day (before decay — for per-day analysis)
+        day_finals.append(agents.copy())
+
+        # ── Nocturnal decay: partial heat_load recovery during rest ───────────
+        agents['heat_load'] *= (1.0 - nocturnal_decay)
+        agents['risk_level'] = classify_risk(agents['heat_load'].values, config)
+
+    return agents, all_snapshots, day_finals
