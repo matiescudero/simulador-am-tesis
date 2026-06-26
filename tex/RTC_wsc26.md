@@ -8,7 +8,7 @@ We thank the three reviewers and the track coordinators for their careful and co
 assessment of our paper. The reviews were unanimous in recommending acceptance with minor
 changes, and we have revised the manuscript accordingly. The revision preserves the original
 model and scope; the main additions are (i) a new robustness-checks subsection (Section 4.5),
-(ii) a statement of computational requirements (Section 3.5), and (iii) a set of clarifications
+(ii) a statement of computational requirements (Section 3.4), and (iii) a set of clarifications
 and corrections requested by the reviewers.
 
 Below we address each comment in turn. References to sections and figures correspond to the
@@ -24,7 +24,7 @@ comments for traceability.
    formulation that incorporates meteorological forcing, time-of-day dynamics, and a
    physiological threshold. Both show that the paper's structural findings are not artifacts
    of the simplified metric.
-2. **Computational requirements** are now reported in Section 3.5 (network size, runtime, and
+2. **Computational requirements** are now reported in Section 3.4 (network size, runtime, and
    a scaling projection to the metropolitan scale).
 3. **Reproducibility.** All results were regenerated with a fixed random seed; the reported
    figures and statistics now correspond exactly to a single reproducible run.
@@ -97,7 +97,7 @@ for future work in Section 5.3.
 
 **(R3-1) Insufficient information about the computational requirements of the simulation.**
 
-We have added a dedicated statement of computational requirements in Section 3.5. We report the
+We have added a dedicated statement of computational requirements in Section 3.4. We report the
 size of the pedestrian network (12,535 nodes; 36,488 edges), the runtime of the full pipeline
 (a few seconds on a standard desktop, with shortest-path routing accounting for ~1 s for the
 simulated trips), and a linear projection to the older-adult population of Greater Santiago
