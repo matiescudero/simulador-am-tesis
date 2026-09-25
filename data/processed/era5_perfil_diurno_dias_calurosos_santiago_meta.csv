@@ -1,0 +1,2 @@
+n_hot_days,dtr_mean,drh_mean,lat,lon,period,source
+389,14.97789203084833,42.45244215938303,-33.45,-70.65,DJF 2015-2025,ERA5 via Open-Meteo archive
