@@ -77,9 +77,25 @@ FP_VERDES_PTS = DATA_PROC / 'destinations' / f'verdes_points_{ZONA}.gpkg' # punt
 FP_MANZ_PAPER = DATA_PROC / f'manzanas_{ZONA}_paper.parquet'         # nb 0.3
 FP_MANZ_SIM   = DATA_PROC / 'censo' / f'manzanas_{ZONA}_sim.parquet' # nb 1 + 3
 
-# Tablas EOD (Santiago-wide, sirven para cualquier zona — nb 2)
-FP_EOD_WALK = DATA_PROC / 'eod' / 'tabla_walk_prob.csv'
-FP_EOD_PURP = DATA_PROC / 'eod' / 'tabla_purpose_prob.csv'
+# Tablas EOD por persona, agrupadas por el vuln_group censal de la manzana del hogar
+# (src/simulador/invariant/eod_tables.py). Las tablas por viaje del nb 2
+# (tabla_walk_prob.csv / tabla_purpose_prob.csv) quedan como referencia histórica.
+FP_EOD_DB   = ROOT.parent.parent / 'DATOS' / 'EOD' / 'EOD GRAN SANTIAGO' / 'base_datos_eodStgo_2012' / 'base_datos_eodStgo_2012.accdb'
+FP_EOD_WALK = DATA_PROC / 'eod' / 'tabla_walk_prob_persona.csv'
+FP_EOD_PURP = DATA_PROC / 'eod' / 'tabla_purpose_prob_persona.csv'
+FP_EOD_AGE  = DATA_PROC / 'eod' / 'tabla_age_prob_persona.csv'
+FP_EOD_DIST = DATA_PROC / 'eod' / 'tabla_dist_walk_persona.csv'
+# Cadena viaje → destino → modo (MODE_CHOICE='eod_logit')
+FP_EOD_TRIP       = DATA_PROC / 'eod' / 'tabla_trip_prob_persona.csv'
+FP_EOD_PURP_TRIP  = DATA_PROC / 'eod' / 'tabla_purpose_trip_persona.csv'
+FP_EOD_CAR        = DATA_PROC / 'eod' / 'tabla_car_prob_persona.csv'
+FP_EOD_CAR_COMUNA = DATA_PROC / 'eod' / 'tabla_car_prob_comuna.csv'
+FP_EOD_DIST_TRIP  = DATA_PROC / 'eod' / 'tabla_dist_trip_persona.csv'
+FP_EOD_MODE_LOGIT = DATA_PROC / 'eod' / 'tabla_modo_caminata_logit.csv'
+FP_EOD_WALK_LOGIT = DATA_PROC / 'eod' / 'tabla_walk_access_logit.csv'   # MODE_CHOICE='access_logit'
+
+# Fracción de copa de árboles (>=3 m) a 3 m, EPSG:32719 (src/simulador/invariant/canopy.py)
+FP_CANOPY   = DATA_PROC / 'canopy' / f'canopy_frac_3m_{ZONA}.tif'
 
 # ── Capa invariante al escenario (src/simulador/invariant) ────────────────────
 # Artefactos que se calculan 1 vez por zona y se reutilizan en todos los escenarios.
@@ -89,10 +105,14 @@ FP_GRAPH_IG   = ARTIFACTS_DIR / 'graph_ig.joblib'   # grafo igraph + índice de 
 
 # Parámetros de la capa invariante (población de agentes + ruteo peatonal)
 POP_SEED          = 42     # semilla de la población — invariante, ≠ semilla de escenario
-UMBRAL_CAMINATA_M = 1200   # descarta rutas peatonalmente implausibles (m)
-K_DESTINOS        = 5      # K destinos más cercanos para muestreo ponderado
-AGENTES_POR_AM    = 10     # 1 agente por cada N adultos mayores 60+
-SALUD_BOOST       = 2.0    # ajuste EOD hacia salud (expuesto — pendiente rediseño conceptual)
+UMBRAL_CAMINATA_M = 4500   # descarta rutas peatonalmente implausibles (m); ~1,5 × 3 km en línea recta
+MODE_CHOICE       = 'access_logit'  # 'access_logit' (logit EOD por persona: accesibilidad, auto, vuln, edad)
+                                    # | 'eod_logit' (viaje→destino→modo; no reproduce el gradiente) | None (prob. fija)
+WALK_SHARE_TARGET = 0.287           # EOD: % de personas 60+ con >=1 viaje a pie (3 propósitos), día laboral
+DEST_CHOICE       = 'eod_distance'  # 'eod_distance' (distancia objetivo EOD) | 'nearest_k' (K más cercanos)
+K_DESTINOS        = 5      # solo DEST_CHOICE='nearest_k': K destinos más cercanos para muestreo ponderado
+AGENTES_POR_AM    = 1      # 1 agente por cada N adultos mayores 60+ (1 = uno por persona)
+SALUD_BOOST       = 1.0    # multiplicador de la prob. EOD de viaje a salud (1 = sin ajuste)
 
 if __name__ == '__main__':
     print(f'Zona activa : {ZONA}')

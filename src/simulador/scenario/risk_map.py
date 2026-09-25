@@ -38,17 +38,17 @@ def aggregate_to_manzana(final_agents: pd.DataFrame,
     geometría de manzanas.
 
     Devuelve un GeoDataFrame con una fila por manzana (todas las manzanas de
-    `manz`, con NaN/0 donde no hubo agentes) y columnas:
-        n_agents, heat_mean, heat_max, heat_p90, pct_risk_high, pct_risk_medium
+    `manz`, con NaN/0 donde no hubo agentes) y columnas continuas:
+        n_agents, heat_mean, heat_median, heat_p90, heat_max
+    Sin categorías de riesgo: los umbrales no están calibrados contra datos de salud.
     """
     g = final_agents.groupby('MANZENT')
     agg = pd.DataFrame({
-        'n_agents':        g.size(),
-        'heat_mean':       g[heat_col].mean(),
-        'heat_max':        g[heat_col].max(),
-        'heat_p90':        g[heat_col].quantile(0.90),
-        'pct_risk_high':   g['risk_level'].apply(lambda x: (x == 'alto').mean()),
-        'pct_risk_medium': g['risk_level'].apply(lambda x: (x == 'medio').mean()),
+        'n_agents':    g.size(),
+        'heat_mean':   g[heat_col].mean(),
+        'heat_median': g[heat_col].median(),
+        'heat_p90':    g[heat_col].quantile(0.90),
+        'heat_max':    g[heat_col].max(),
     }).reset_index()
 
     out = manz[['MANZENT', 'geometry']].merge(agg, on='MANZENT', how='left')

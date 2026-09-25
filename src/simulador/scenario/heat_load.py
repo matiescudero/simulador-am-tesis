@@ -90,10 +90,16 @@ def build_agents(walkers: pd.DataFrame,
     dep_abs = sample_departure_abs(agents['purpose_group_model'].to_numpy(), rng, config)
     agents['departure_step'] = dep_abs - config.day_start_min
 
-    # Velocidad de caminata por agente (según vulnerabilidad)
-    agents['walk_speed_m_min'] = (
-        agents['vuln_group'].map(config.walk_speed_by_vuln).fillna(config.walk_speed_m_min)
-    )
+    if config.physiology_by == 'age':
+        if 'age_band' not in agents.columns:
+            raise ValueError("physiology_by='age' requiere la columna age_band en walkers")
+        phys_key, speed_map, delta_map = 'age_band', config.walk_speed_by_age, config.threshold_delta_by_age
+    elif config.physiology_by == 'vuln':
+        phys_key, speed_map, delta_map = 'vuln_group', config.walk_speed_by_vuln, config.vuln_delta
+    else:
+        raise ValueError(f'physiology_by desconocido: {config.physiology_by!r}')
+
+    agents['walk_speed_m_min'] = agents[phys_key].map(speed_map).fillna(config.walk_speed_m_min)
 
     # Permanencia por agente (según propósito)
     dwell_steps = np.full(n, config.dwell_min_min, dtype=int)
@@ -107,13 +113,15 @@ def build_agents(walkers: pd.DataFrame,
             config.dwell_min_min, config.dwell_max_min + 1, size=int(unknown.sum()))
     agents['dwell_steps'] = dwell_steps
 
+    # Fracción de la ruta bajo copa de árbol (capa invariante); 0 si no se calculó
+    agents['shade_frac'] = (agents['shade_route'].fillna(0.0).clip(0, 1)
+                            if 'shade_route' in agents.columns else 0.0)
+
     # Enfriamiento NDVI: reducción aditiva de WBGT (°C) para la ruta del agente
     ndvi_n = ((agents['ndvi_route'] - ndvi_min) / (ndvi_max - ndvi_min + 1e-9)).clip(0, 1)
     agents['ndvi_cooling'] = config.ndvi_alpha * ndvi_n
 
-    # Umbral WBGT por agente (°C)
-    delta = agents['vuln_group'].map(config.vuln_delta).fillna(0.0)
-    agents['wbgt_umbral'] = config.wbgt_umbral_base - delta
+    agents['wbgt_umbral'] = config.wbgt_umbral_base - agents[phys_key].map(delta_map).fillna(0.0)
 
     # Estado dinámico
     agents['status']            = 'en_casa'
@@ -180,24 +188,96 @@ def step(agents: pd.DataFrame,
     return agents
 
 
-def run(agents: pd.DataFrame,
-        wbgt_profile: np.ndarray,
-        config: SimConfig = DEFAULT_CFG,
-        snapshot_every: int = 15) -> tuple:
-    """Corre un día completo (config.n_steps pasos). Devuelve (agents, snapshots)."""
-    if len(wbgt_profile) < config.n_steps:
+_STATUS = np.array(['en_casa', 'caminando', 'en_destino', 'volviendo', 'completado'], dtype=object)
+_HOME, _WALK, _DEST, _RET, _DONE = range(5)
+
+
+def _run_day(agents: pd.DataFrame,
+             wbgt_profile: np.ndarray,
+             config: SimConfig,
+             snapshot_every: int | None,
+             day: int | None = None) -> list:
+    """
+    Un día completo sobre arreglos numpy. Misma lógica y mismo orden de
+    operaciones que `step`, sin comparar strings por paso. Escribe el estado
+    final en `agents` y devuelve los snapshots pedidos.
+
+    `wbgt_profile` puede ser 1D (un solo perfil, sin sombra) o (2, n_steps)
+    sol/sombra: el WBGT de cada agente es la mezcla según su `shade_frac`.
+    """
+    prof = np.atleast_2d(np.asarray(wbgt_profile, dtype=float))
+    if prof.shape[1] < config.n_steps:
         raise ValueError(
-            f'wbgt_profile tiene {len(wbgt_profile)} valores; '
+            f'wbgt_profile tiene {prof.shape[1]} valores; '
             f'se necesitan al menos {config.n_steps}.')
+    sun_prof = prof[0]
+    shade_prof = prof[1] if prof.shape[0] > 1 else prof[0]
+    code = {name: i for i, name in enumerate(_STATUS)}
+    status  = agents['status'].map(code).to_numpy(dtype=np.int8)
+    dep     = agents['departure_step'].to_numpy()
+    dwell   = agents['dwell_steps'].to_numpy()
+    route   = agents['route_length_m'].to_numpy(dtype=float)
+    speed   = agents['walk_speed_m_min'].to_numpy(dtype=float) * config.step_min
+    cooling = agents['ndvi_cooling'].to_numpy(dtype=float)
+    umbral  = agents['wbgt_umbral'].to_numpy(dtype=float)
+    shade   = (agents['shade_frac'].to_numpy(dtype=float) if 'shade_frac' in agents.columns
+               else np.zeros(len(agents)))
+    dist    = agents['distance_traveled'].to_numpy(dtype=float).copy()
+    heat    = agents['heat_load'].to_numpy(dtype=float).copy()
+    arrival = agents['arrival_step'].to_numpy().copy()
+
+    def write_back():
+        agents['status'] = _STATUS[status]
+        agents['distance_traveled'] = dist
+        agents['heat_load'] = heat
+        agents['arrival_step'] = arrival
+        agents['risk_level'] = classify_risk(heat, config)
 
     snapshots = []
     for s in range(config.n_steps):
-        agents = step(agents, s, wbgt_profile, config)
-        if s % snapshot_every == 0:
+        sun_now = float(sun_prof[s])
+        shade_gap = float(shade_prof[s]) - sun_now
+
+        status[(status == _HOME) & (dep == s)] = _WALK
+
+        idx = np.flatnonzero(status == _WALK)
+        if idx.size:
+            dist[idx] += np.minimum(speed[idx], route[idx] - dist[idx])
+            heat[idx] += np.maximum(0.0, (sun_now + shade[idx] * shade_gap - cooling[idx]) - umbral[idx]) * config.step_min
+            arrived = idx[dist[idx] >= route[idx]]
+            status[arrived] = _DEST
+            arrival[arrived] = s
+            dist[arrived] = route[arrived]
+
+        done = (status == _DEST) & (arrival >= 0) & ((s - arrival) >= dwell)
+        status[done] = _RET
+        dist[done] = 0.0
+
+        idx = np.flatnonzero(status == _RET)
+        if idx.size:
+            dist[idx] += np.minimum(speed[idx], route[idx] - dist[idx])
+            heat[idx] += np.maximum(0.0, (sun_now + shade[idx] * shade_gap - cooling[idx]) - umbral[idx]) * config.step_min
+            status[idx[dist[idx] >= route[idx]]] = _DONE
+
+        if snapshot_every and s % snapshot_every == 0:
+            write_back()
             snap = agents[_SNAP_COLS].copy()
             snap['step'] = s
             snap['time'] = step_to_time(s, config)
+            if day is not None:
+                snap['day'] = day
             snapshots.append(snap)
+
+    write_back()
+    return snapshots
+
+
+def run(agents: pd.DataFrame,
+        wbgt_profile: np.ndarray,
+        config: SimConfig = DEFAULT_CFG,
+        snapshot_every: int | None = 15) -> tuple:
+    """Corre un día completo (config.n_steps pasos). Devuelve (agents, snapshots)."""
+    snapshots = _run_day(agents, wbgt_profile, config, snapshot_every)
     return agents, snapshots
 
 
@@ -241,15 +321,7 @@ def run_multiday(agents: pd.DataFrame,
                 config.dwell_min_min, config.dwell_max_min + 1, size=int(unknown.sum()))
         agents['dwell_steps'] = dwell_steps
 
-        for s in range(config.n_steps):
-            agents = step(agents, s, wbgt_profile, config)
-            if s % snapshot_every == 0:
-                snap = agents[_SNAP_COLS].copy()
-                snap['step'] = s
-                snap['time'] = step_to_time(s, config)
-                snap['day']  = day_idx + 1
-                all_snapshots.append(snap)
-
+        all_snapshots.extend(_run_day(agents, wbgt_profile, config, snapshot_every, day=day_idx + 1))
         day_finals.append(agents.copy())
 
         agents['heat_load'] *= (1.0 - nocturnal_decay)

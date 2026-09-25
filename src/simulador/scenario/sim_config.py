@@ -25,8 +25,21 @@ class SimConfig:
     day_end_min:   int = 22 * 60       # 22:00 (EOD: salidas hasta ~21 h + permanencia + regreso)
     step_min:      int = 1             # minutos por paso
 
+    # ── Fisiología del agente: por tramo de edad ('age') o por vuln_group ('vuln') ─
+    # 'age' asigna velocidad y umbral según la edad del agente (columna age_band de
+    # la capa invariante); 'vuln' reproduce la versión anterior, que los asignaba
+    # según el índice territorial de la manzana. Los valores por edad reutilizan
+    # los tres niveles previos — pendiente contrastarlos con literatura por edad.
+    physiology_by: str = 'age'
+    walk_speed_by_age: dict = field(
+        default_factory=lambda: {'60-69': 68.0, '70-79': 60.0, '80+': 52.0}
+    )
+    threshold_delta_by_age: dict = field(
+        default_factory=lambda: {'60-69': 0.0, '70-79': 1.5, '80+': 3.0}
+    )
+
     # ── Velocidad de caminata ──────────────────────────────────────────────
-    walk_speed_m_min: float = 62.0     # fallback si vuln_group no está en el dict
+    walk_speed_m_min: float = 62.0     # fallback si el grupo no está en el dict
     walk_speed_by_vuln: dict = field(
         default_factory=lambda: {'baja': 68.0, 'media': 60.0, 'alta': 52.0}
     )
@@ -98,13 +111,36 @@ class SimConfig:
     # Reducción de umbral por vulnerabilidad (°C). Kenney & Munce (2003).
 
     # ── Enfriamiento NDVI (aditivo) ────────────────────────────────────────
-    ndvi_alpha: float = 2.5
-    # Reducción aditiva máxima de WBGT (°C) a ndvi_norm=1.
-    # Bowler et al. 2010; estudios LST-NDVI Santiago (~2-3 °C) → 2.5 punto medio.
+    # Con sombra de arbolado explícita (shade_route en walkers), el NDVI solo
+    # representa el enfriamiento del aire por vegetación: 1,0 °C máximo
+    # (Bowler et al. 2010, ~1 °C de temperatura del aire en parques). Sin sombra
+    # explícita, la versión anterior usaba 2,5 °C para cubrir ambos efectos.
+    ndvi_alpha: float = 1.0
+
+    # ── WBGT: método y sombra ──────────────────────────────────────────────
+    # 'liljegren': WBGT físico (Liljegren et al. 2008, vía pywbgt) a partir de T,
+    #              HR, radiación, viento, presión y posición solar; al sol y a la
+    #              sombra (radiación × shade_transmittance).
+    # 'bom':       fórmula simplificada BoM + corrección solar 0,04·√Rs (anterior).
+    wbgt_method: str = 'liljegren'
+    shade_transmittance: float = 0.15   # fracción de radiación bajo copa de árbol
+    site_lat: float = -33.45
+    site_lon: float = -70.65
+    ref_date: str = '2019-01-26'        # fecha de referencia para la geometría solar
+    utc_offset_h: int = -3              # hora de verano de Chile
+    surface_pressure_hpa: float = 949.9 # ERA5, días calurosos
+    # Viento medio a 10 m por hora (m/s), días de verano con Tmax >= 30 °C, ERA5 2015–2025.
+    # data/processed/era5_viento_presion_dias_calurosos_santiago.csv
+    diurnal_wind_10m: tuple = (
+        1.21, 0.93, 0.76, 0.77, 0.80, 0.83, 0.86, 0.91, 0.75, 0.89, 1.16, 1.55,
+        2.28, 3.00, 3.67, 4.13, 4.39, 4.55, 4.58, 4.28, 3.43, 2.58, 2.05, 1.55)
 
     # ── Umbrales de clasificación de riesgo (°C·min sobre umbral del agente) ─
-    threshold_med:  float = 30.0       # tentativo — calibrar tras pilotos
-    threshold_high: float = 60.0       # tentativo — calibrar tras pilotos
+    # Solo para risk_level en snapshots/visualización. Los resultados del banco se
+    # reportan en continuo (heat_load): estos umbrales no están calibrados contra
+    # datos de salud y, con distancias EOD, clasifican a >85% como riesgo alto.
+    threshold_med:  float = 30.0
+    threshold_high: float = 60.0
 
     # ── Corrección solar WBGT (Opción B, ISO 7243) ─────────────────────────
     solar_k: float = 0.04

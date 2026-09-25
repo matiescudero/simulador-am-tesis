@@ -56,13 +56,16 @@ def run_one_scenario(walkers_fp,
     agents = build_agents(walkers, ndvi_min, ndvi_max, config=config, seed=seed)
     profiles = make_wbgt_profiles_multiday(
         met['T_max'], met['HR_min'], met['Rs_max'], n_dias=n_dias, config=config)
-    final, _, _ = run_multiday(
-        agents, profiles, config=config, nocturnal_decay=nocturnal_decay, seed=seed)
+    _, _, day_finals = run_multiday(
+        agents, profiles, config=config, nocturnal_decay=nocturnal_decay, seed=seed,
+        snapshot_every=None)
     t['sim'] = time.perf_counter() - t1
 
     # ── Agregación + escritura de la salida ─────────────────────────────────────
+    # Carga al cierre del último día, antes del decay nocturno: la exposición
+    # acumulada del evento, no el remanente que pasaría a un día siguiente.
     t2 = time.perf_counter()
-    manz_risk = aggregate_to_manzana(final, manz)
+    manz_risk = aggregate_to_manzana(day_finals[-1], manz)
     if out_vector_fp is not None:
         write_risk_vector(manz_risk, out_vector_fp)
     if out_cog_fp is not None:
@@ -102,5 +105,5 @@ def run_scenario_indexed(index: int,
         'T_max': met['T_max'], 'HR_min': met['HR_min'], 'Rs_max': met['Rs_max'],
         't_total': t['total'], 't_sim': t['sim'],
         'heat_mean': float(ca['heat_mean'].mean()),
-        'pct_riesgo': float((ca['pct_risk_medium'] + ca['pct_risk_high'] > 0).mean()),
+        'heat_p90': float(ca['heat_p90'].mean()),
     }

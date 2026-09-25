@@ -37,7 +37,8 @@ def build_igraph(G) -> IGraphIndex:
     Construye un grafo igraph dirigido desde un MultiDiGraph de OSMnx.
 
     Colapsa aristas paralelas quedándose con la de menor longitud (igual que
-    el ruteo de nb5). El atributo de arista 'length' guarda los metros.
+    el ruteo de nb5). El atributo de arista 'length' guarda los metros y
+    'canopy_frac' la fracción bajo copa de árbol (0 si no se calculó).
     """
     nodes_list = list(G.nodes())
     node_to_idx = {n: i for i, n in enumerate(nodes_list)}
@@ -46,9 +47,10 @@ def build_igraph(G) -> IGraphIndex:
     for u, v, d in G.edges(data=True):
         k = (node_to_idx[u], node_to_idx[v])
         l = float(d.get('length', 1.0))
-        if k not in edges_dict or l < edges_dict[k]:
-            edges_dict[k] = l
+        if k not in edges_dict or l < edges_dict[k][0]:
+            edges_dict[k] = (l, float(d.get('canopy_frac', 0.0)))
 
     ig_G = ig.Graph(n=len(nodes_list), edges=list(edges_dict.keys()), directed=True)
-    ig_G.es['length'] = list(edges_dict.values())
+    ig_G.es['length'] = [v[0] for v in edges_dict.values()]
+    ig_G.es['canopy_frac'] = [v[1] for v in edges_dict.values()]
     return IGraphIndex(ig_G=ig_G, nodes_list=nodes_list, node_to_idx=node_to_idx)
