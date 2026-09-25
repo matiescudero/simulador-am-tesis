@@ -1,0 +1,525 @@
+\documentclass[11pt,a4paper]{article}
+
+% ── Paquetes ────────────────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish]{babel}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{todonotes}
+\usepackage{enumitem}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!60!black,
+    citecolor=blue!60!black,
+    urlcolor=blue!60!black
+}
+
+% Caja de nota de enfoque
+\newcommand{\notaenfoque}[1]{%
+    \begin{quote}
+    \small\itshape\color{gray!70!black} #1
+    \end{quote}
+}
+
+\title{Un algoritmo de emulación estadística para reducir el costo de\\
+       simulaciones basadas en agentes: caso de estudio de olas de\\
+       calor en adultos mayores}
+\author{Matías Escudero}
+\date{Borrador --- \today}
+
+\begin{document}
+
+\maketitle
+
+\notaenfoque{
+\textbf{Nota de enfoque} (según indicación de la profesora, reunión 31 jul 2026):
+El foco del paper NO es ``un simulador de olas de calor''. Es un
+\textbf{algoritmo para reducir el costo computacional de simulaciones
+basadas en agentes}, aplicado a un caso de estudio de exposición al calor
+en adultos mayores. La estructura sigue exactamente esa lógica: (1) modelar
+y validar el caso de estudio, (2) mostrar cómo el algoritmo propuesto
+(emulador PCA+GP) rinde contra alternativas en tiempo de ejecución y calidad.
+
+\textbf{Actualización (reunión 14 ago 2026):} escribir directamente en
+\textbf{inglés} de aquí en adelante (no traducir al final) --- la versión en
+español de la tesis se deriva después, más extendida. Este borrador se deja
+en español por ahora solo porque así estaba empezado; migrar antes de la
+próxima reunión (28 ago).
+}
+
+\begin{abstract}
+Las simulaciones basadas en agentes (ABM) espaciales son una herramienta
+clave para estudiar fenómenos de salud pública urbana, pero su costo
+computacional limita su uso en aplicaciones que requieren respuesta casi
+inmediata --- por ejemplo, sistemas de alerta temprana ante olas de calor.
+Presentamos un algoritmo de emulación estadística (diseño Latin Hypercube +
+compresión por componentes principales + Gaussian Process) que reduce el
+tiempo de una consulta de $\sim$65--100 segundos a $\sim$2,3 milisegundos
+(una aceleración de $\sim$28.000--44.000$\times$), manteniendo una fidelidad
+de 87,5\% (\emph{skill}) frente al modelo original, validada mediante
+\emph{leave-one-out}. Aplicamos el algoritmo a un caso de estudio de
+exposición al calor en adultos mayores (65+) en el Gran Santiago, Chile
+(34 comunas, 1,19 millones de adultos mayores), comparando el proceso
+Gaussiano contra Random Forest, interpolación RBF y \emph{Polynomial Chaos
+Expansion}. El proceso Gaussiano obtiene la mejor precisión de las cuatro
+alternativas y es el único que entrega incertidumbre puntual calibrada
+(92\% de cobertura del intervalo de confianza al 95\%), una propiedad
+indispensable para sistemas de decisión en tiempo real.
+\end{abstract}
+
+% ══════════════════════════════════════════════════════════════════════════
+\section{Introducción}
+% ══════════════════════════════════════════════════════════════════════════
+
+\begin{itemize}[leftmargin=*]
+    \item Motivación: olas de calor y mortalidad en adultos mayores ---
+        contexto real reciente (ej. evento de calor en París 2026,
+        $\sim$85\% de las muertes en adultos mayores --- usar como gancho,
+        con cita de prensa/fuente oficial).
+    \item El problema computacional: los ABM espaciales de exposición son
+        caros de correr (en nuestro caso, 65--100 s por escenario de 3 días
+        en Gran Santiago), lo que impide su uso en un sistema operacional
+        que deba responder a un pronóstico meteorológico en tiempo real.
+    \item La propuesta: un algoritmo de emulación (\emph{surrogate model})
+        que aprende la relación entre condiciones meteorológicas y el mapa
+        de riesgo resultante, sin volver a correr el ABM por cada consulta.
+    \item Contribución dual:
+    \begin{enumerate}
+        \item Un algoritmo general de reducción de costo para ABM espaciales
+            de salida de alta dimensión (aplicable más allá de este caso de
+            estudio).
+        \item Su aplicación y validación en un caso de estudio real y
+            actual: exposición al calor en adultos mayores, Gran Santiago.
+    \end{enumerate}
+\end{itemize}
+
+% ══════════════════════════════════════════════════════════════════════════
+\section{Trabajo relacionado}
+% ══════════════════════════════════════════════════════════════════════════
+
+\paragraph{Emulación de simuladores costosos (fundamento metodológico).}
+Sacks et al. (1989), \emph{Design and Analysis of Computer Experiments}
+\todo[inline,color=orange!40]{Verificar cita exacta}; Kennedy \& O'Hagan
+(2001), \emph{Bayesian calibration of computer models}
+\todo[inline,color=orange!40]{Verificar cita exacta}; Higdon et al. (2008),
+\emph{Computer Model Calibration Using High-Dimensional Output}, JASA ---
+base directa del pipeline PCA+GP para salida espacial de alta dimensión;
+Gramacy (2020), \emph{Surrogates: Gaussian Process Modeling, Design, and
+Optimization}.
+
+\paragraph{Emulación de ABM específicamente (precedente directo).}
+\emph{Towards real-time predictions using emulators of agent-based models},
+Journal of Simulation (2024); \emph{Combining an agent-based model with
+Gaussian process emulation} (variante Ómicron, Noruega), Epidemics (2026);
+\emph{Gaussian process emulation of spatio-temporal outputs of a 2D inland
+flood model}, Water Research (2022).
+
+\paragraph{Comparación GP vs. otras técnicas de emulación (justifica la elección).}
+\emph{A comparison of Gaussian processes and polynomial chaos emulators},
+Phil. Trans. Royal Society A (2025); Owen et al., \emph{A comparison of
+polynomial chaos and Gaussian process emulation for UQ in computer
+experiments}; \emph{Emulation of CPU-demanding reactive transport models: GP
+vs PCE vs redes neuronales}.
+
+\paragraph{Extensiones / trabajo futuro citable.}
+\emph{Gaussian Process Latent Factor Regression for Low-Data Problems with
+High-Dimensional Outputs} (2026); \emph{Multivariate Gaussian Process
+Emulators With Nonseparable Covariance Structures} (coregionalización).
+
+\paragraph{Dominio de aplicación.}
+Vulnerabilidad al calor urbano --- el vacío que este trabajo llena,
+combinando ABM + emulador + tiempo real: \emph{Urban-Hazard Risk Analysis:
+Heat-Related Risks in the Elderly in Major Italian Cities}; \emph{A Novel
+Urban Heat Vulnerability Analysis: ML + Remote Sensing}, Remote Sensing
+(2024).
+
+% ══════════════════════════════════════════════════════════════════════════
+\section{Caso de estudio: modelo de exposición al calor}
+% ══════════════════════════════════════════════════════════════════════════
+
+\subsection{Modelo de agentes}
+
+Población: 1 agente representa a 10 adultos mayores de la misma manzana
+censal (comparten vulnerabilidad/ubicación, difieren en decisión de
+salir/propósito/horario, muestreado desde la Encuesta Origen-Destino Gran
+Santiago 2012, filtrada a 60+).
+
+Arquitectura de dos capas:
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Capa invariante} (no depende del clima): red peatonal,
+        rutas peatonales deduplicadas por par origen-destino, NDVI a lo
+        largo de cada ruta. Se calcula una vez por zona urbana.
+    \item \textbf{Capa de escenario} (depende del clima): modelo WBGT
+        aditivo aplicado sobre la capa invariante.
+\end{itemize}
+
+Modelo de calor --- WBGT aditivo (no multiplicativo):
+\begin{align}
+    \mathrm{WBGT}_{\mathrm{eff}} &= \mathrm{WBGT}_{\mathrm{ambiente}} -
+        \mathrm{ndvi\_cooling} \\
+    \mathrm{ndvi\_cooling} &= \alpha_{\mathrm{ndvi}} \cdot
+        \mathrm{ndvi\_norm}(\mathrm{ruta}), \quad
+        \alpha_{\mathrm{ndvi}} = 2.5\,^\circ\mathrm{C}
+        \text{ (Bowler et al. 2010)} \\
+    \mathrm{wbgt\_umbral}_{\mathrm{agente}} &= 27\,^\circ\mathrm{C}
+        \text{ (NIOSH 2016)} - \delta(\mathrm{vuln\_group})
+\end{align}
+con $\delta = \{\text{baja}: 0,\ \text{media}: 1.5,\ \text{alta}: 3.0\}$
+(Kenney \& Munce 2003). Acumulación multi-día con
+\texttt{nocturnal\_decay} $= 0.80$.
+
+\subsection{Escala del caso de estudio}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrr}
+\toprule
+ & Peñalolén (piloto) & Gran Santiago (caso final) \\
+\midrule
+Comunas & 1 & 34 \\
+Manzanas censales & $\sim$1.600 & 42.800 \\
+Nodos de red peatonal & 12.535 & 212.314 \\
+Adultos mayores 65+ & --- & 1,19 millones \\
+Tiempo capa invariante (1 vez) & --- & 13,5 min \\
+Tiempo por escenario (3 días) & --- & 65--100 s \\
+\bottomrule
+\end{tabular}
+\caption{Escala del caso de estudio, Peñalolén vs. Gran Santiago.}
+\label{tab:escala}
+\end{table}
+
+% ══════════════════════════════════════════════════════════════════════════
+\section{Validación del caso de estudio}
+% ══════════════════════════════════════════════════════════════════════════
+
+\subsection{Validación temporal (RM completa) --- resultado fuerte}
+
+Usando datos reales de defunciones DEIS (RM, 65+, 2005--2023): el exceso de
+mortalidad durante olas de calor documentadas correlaciona con la
+\textbf{duración} de la ola más que con su intensidad pico. Regresión
+múltiple estandarizada (exceso acumulado $\sim$ Tmax\_max + n\_dias):
+$R^2=0{,}55$; la duración explica $\sim$96\% de la varianza relativa; el
+Tmax pico no es significativo ($p=0{,}695$).
+
+El mismo patrón se replica de forma independiente en egresos hospitalarios
+(N17 insuficiencia renal aguda + E87 trastorno electrolítico, RM 60+): la
+tasa correlaciona fuertemente con la Tmax media/p90 del verano
+($r=0{,}84$--$0{,}88$, $p<0{,}05$), no con el pico ($r=0{,}52$, n.s.).
+
+\textit{Este hallazgo fue corroborado independientemente por un
+epidemiólogo experto (ex-Director de Epidemiología, MINSAL) como
+consistente con literatura documentada sobre duración de eventos de calor.}
+
+\subsection{Validación espacial (comuna / establecimiento) --- resultado nulo, documentado con rigor}
+
+Se probó si el riesgo simulado (ABM y también el índice de vulnerabilidad
+estático) correlaciona espacialmente con datos reales de salud:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Nivel comuna} ($n=34$): mortalidad por causas sensibles al
+        calor (5 eventos reales con meteorología día a día vía
+        ERA5/Open-Meteo) y egresos N17+E87 anuales --- sin correlación
+        significativa en ningún caso, incluso corrigiendo un artefacto de
+        \emph{pooling} entre eventos (naive $\rho=0{,}31$, $p<0{,}001$
+        desaparece a $\rho=0{,}02$, n.s. al estandarizar dentro de evento).
+    \item \textbf{Nivel establecimiento de salud} ($n=25$): crosswalk
+        georreferenciado entre códigos de urgencias DEIS y catastro nacional
+        MINSAL (93--100\% de cobertura validada), \emph{catchment} por
+        cercanía, urgencias por causa cardiovascular específica, con
+        \emph{baseline} estacionalmente correcto --- tampoco significativo.
+\end{itemize}
+
+\textbf{Diagnóstico}: no es una falla del modelo --- el gradiente de
+vulnerabilidad simulado es correcto y grande (comunas de alto ingreso
+$\sim$0,2 vs.\ vulnerables $\sim$10 en \texttt{heat\_mean}, $\sim$65$\times$
+de rango, geográficamente donde corresponde). Es el \textbf{problema de área
+pequeña / falacia ecológica}: con conteos de salud pequeños por unidad
+espacial, el ruido de Poisson domina la señal real --- confirmado
+independientemente por el experto consultado.
+
+\textbf{Trabajo en curso}: solicitud vía Ley de Transparencia de egresos
+agregados por establecimiento$\times$día$\times$grupo\_edad$\times$diagnóstico
+(siguiendo recomendación directa del experto), para repetir la validación a
+resolución más fina.
+
+\subsection{Validación por experto (planificada)}
+
+Siguiendo indicación de la profesora: formalizar un proceso de validación
+contra experto mediante un instrumento estructurado --- generar corridas del
+simulador para escenarios conocidos, mostrar los resultados, y recoger su
+evaluación formal basada en experiencia profesional en epidemiología del
+calor.
+
+\subsection{Métricas de evaluación del simulador}
+
+Métricas actualmente implementadas:
+\begin{enumerate}[leftmargin=*]
+    \item Número de personas afectadas (agregado, KPI poblacional).
+    \item Riesgo por persona (\texttt{heat\_load} individual, variable en el tiempo).
+    \item Riesgo promedio por zona (agregación espacial, variable en el tiempo).
+\end{enumerate}
+
+\todo[inline,color=orange!40]{Pendiente: revisión de literatura sobre
+métricas adicionales usadas en estudios/simulaciones de impacto de olas de
+calor (pedido explícito de la profesora, 31 jul 2026).}
+
+% ══════════════════════════════════════════════════════════════════════════
+\section{El algoritmo de emulación}
+% ══════════════════════════════════════════════════════════════════════════
+
+\subsection{Diseño}
+
+\emph{Latin Hypercube Sampling} (40 puntos, $T_{\max} \in [26,38]\,^\circ$C,
+$HR_{\min} \in [15,50]$\%, $Rs_{\max} \in [700,1050]$ W/m$^2$) $\to$ correr
+el ABM en cada punto $\to$ PCA sobre los 40 mapas resultantes ($K=12$
+componentes, 98,9\% de varianza explicada) $\to$ un Gaussian Process por
+componente (\emph{kernel} \texttt{ConstantKernel} $\times$ \texttt{RBF(ARD)}
+$+$ \texttt{WhiteKernel}) $\to$ predicción vía GP + PCA inversa.
+
+\subsection{Benchmark: GP vs.\ alternativas}
+
+Validación cruzada \emph{leave-one-out} completa (PCA re-ajustada en cada
+\emph{fold}, sin fuga de información), sobre el banco real de 40 escenarios,
+Gran Santiago:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrrrrl}
+\toprule
+Método & RMSE & Skill & Cobertura IC95\% & Entrenar & Predecir & Incertidumbre \\
+\midrule
+\textbf{GP} & \textbf{1,50} & \textbf{87,5\%} & \textbf{92\%} & 810 ms & 2,5 ms & nativa, local \\
+Random Forest & 2,75 & 77,1\% & 99\%$^*$ & 2.328 ms & 131 ms & proxy, no calibrada \\
+RBF & 1,79 & 85,1\% & N/A & 0,3 ms & 0,04 ms & ninguna \\
+PCE (orden 2) & 1,82 & 84,8\% & N/A & 88 ms & 36 ms & global, no puntual \\
+\bottomrule
+\end{tabular}
+\caption{Benchmark GP vs.\ alternativas, \emph{leave-one-out} $n=40$, Gran
+Santiago. $^*$Cobertura de Random Forest artificialmente alta --- dispersión
+entre árboles, no incertidumbre probabilística calibrada.}
+\label{tab:benchmark}
+\end{table}
+
+GP obtiene la mejor precisión de las cuatro alternativas \textbf{y} es el
+único con incertidumbre puntual bien calibrada --- propiedad indispensable
+para un sistema operacional que debe comunicar cuánto confiar en cada
+predicción.
+
+\todo[inline,color=orange!40]{Benchmark preliminar con $n=40$; repetir sobre
+el banco completo de $\sim$300 escenarios antes de la versión final.}
+
+\subsection{Tiempo de ejecución aislado}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lr}
+\toprule
+Componente & Tiempo \\
+\midrule
+GP predict (12 componentes, media + desviación) & 2,02 ms \\
+PCA inversa (12 pesos $\to$ mapa de 42.800 manzanas) & 0,27 ms \\
+\textbf{Total} & \textbf{2,29 ms} \\
+\midrule
+\emph{(referencia)} 1 corrida del ABM (Gran Santiago, 3 días) & 65.000--100.000 ms \\
+\bottomrule
+\end{tabular}
+\caption{Tiempo de ejecución aislado del emulador vs.\ el ABM completo.
+Aceleración: $\sim$28.400$\times$--43.700$\times$.}
+\label{tab:tiempos}
+\end{table}
+
+\subsection{Escalamiento: tiempo de ejecución vs.\ número de agentes}
+
+Pedido explícito de la profesora (reunión 14 ago 2026): un gráfico con eje
+$X$ = número de agentes simulados, eje $Y$ = tiempo de ejecución, comparando
+el ABM completo contra el emulador GP (línea plana, $\sim$2,3 ms
+independiente de $N$, porque el costo del ABM ya quedó ``destilado'' en el
+banco de entrenamiento durante el diseño LHS).
+
+Resultado medido (Gran Santiago, subconjuntos de 10--100\% de los 45.047
+\emph{walkers}, un día de simulación por punto):
+
+\begin{table}[h]
+\centering
+\begin{tabular}{rrr}
+\toprule
+N.\ de agentes & Tiempo ABM (1 día) & Tiempo emulador GP \\
+\midrule
+4.504 & 3,60 s & 2,29 ms \\
+11.261 & 5,08 s & 2,29 ms \\
+22.523 & 8,03 s & 2,29 ms \\
+33.785 & 11,11 s & 2,29 ms \\
+45.047 & 13,73 s & 2,29 ms \\
+\bottomrule
+\end{tabular}
+\caption{Tiempo de ejecución del ABM vs.\ número de agentes (1 día de
+simulación), comparado contra el tiempo constante del emulador GP.}
+\label{tab:tiempo_vs_agentes}
+\end{table}
+
+El tiempo del ABM crece de forma aproximadamente lineal con el número de
+agentes ($t \approx 2{,}5\text{s} + 0{,}25\text{ms} \times N_{\mathrm{agentes}}$,
+ajuste por mínimos cuadrados sobre los 5 puntos), reflejando un costo fijo de
+inicialización más un costo marginal por agente. El emulador GP, en cambio,
+es \textbf{constante} respecto a $N$ --- su costo escala con la
+\emph{compresión} del mapa (12 componentes PCA), no con el número de agentes
+que generaron ese mapa. Esta es la propiedad clave: mientras más grande el
+caso de estudio (más agentes, más ciudad), mayor la ventaja relativa del
+emulador.
+
+\todo[inline,color=green!30!black]{Falta: figura (gráfico de líneas, eje $Y$
+en escala logarítmica dado el contraste de 4 órdenes de magnitud) --- datos
+ya en \texttt{scenarios/gran\_santiago/tiempo\_vs\_agentes.csv}. Nota: esta
+corrida usa 1 día de simulación por agilidad; la cifra de referencia de
+65--100s (Tabla~\ref{tab:tiempos}) es para 3 días --- homologar antes de la
+versión final.}
+
+\subsection{Estudio de ablación}
+
+Pedido explícito de la profesora (reunión 14 ago 2026): un estudio de
+\emph{ablación} --- remover/agregar sistemáticamente componentes del modelo
+y medir el impacto de cada uno en el resultado final, para verificar que
+ningún componente es redundante y cuantificar el aporte real de cada parte.
+
+\todo[inline,color=orange!40]{PENDIENTE --- diseñar y correr. Candidatos a
+ablacionar (propuesta inicial, a confirmar):
+\begin{itemize}[leftmargin=*,nosep]
+    \item Enfriamiento por NDVI (\texttt{ndvi\_alpha}: activo vs.\ 0)
+    \item Diferenciación de umbral WBGT por grupo de vulnerabilidad
+        (\texttt{vuln\_delta}: activo vs.\ uniforme)
+    \item Velocidad de caminata diferenciada por vulnerabilidad (activo vs.
+        velocidad única)
+    \item Decaimiento nocturno multi-día (\texttt{nocturnal\_decay}: 0,80
+        vs.\ 0, es decir sin memoria entre días)
+\end{itemize}
+Para cada configuración: correr el mismo banco de escenarios, medir el
+cambio en el mapa de riesgo resultante (skill/RMSE respecto a la
+configuración completa) --- esto muestra qué tan sensible es el resultado a
+cada mecanismo del modelo.}
+
+\subsection{Pruebas estadísticas adicionales}
+
+\todo[inline,color=orange!40]{PENDIENTE (pedido de la profesora): agregar
+prueba estadística formal (ej.\ test $z$) sobre la diferencia de skill entre
+GP y las alternativas del benchmark (Tabla~\ref{tab:benchmark}), no solo
+reportar el punto estimado.}
+
+% ══════════════════════════════════════════════════════════════════════════
+\section{Resultados}
+\todo[inline,color=orange!40]{Pendiente --- se completa con la corrida del
+banco completo y la validación por experto.}
+% ══════════════════════════════════════════════════════════════════════════
+
+% ══════════════════════════════════════════════════════════════════════════
+\section{Análisis de escenarios de mitigación}
+\label{sec:mitigacion}
+% ══════════════════════════════════════════════════════════════════════════
+
+\todo[inline,color=purple!40]{SECCIÓN NUEVA (reunión 14 ago 2026) --- según
+la profesora, este debería ser un \textbf{capítulo completo de la tesis},
+aquí solo un esbozo para el paper. Usa directamente la capacidad de
+``reciclaje de escenarios'' del emulador: el mapa de riesgo identifica
+\emph{dónde} conviene intervenir, y el emulador permite estimar el efecto de
+una intervención en milisegundos, sin recorrer todo el banco de nuevo.}
+
+Estrategias de mitigación de calor urbano documentadas en otras ciudades,
+como referencia para el diseño de escenarios \emph{what-if}:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Nebulización en altura} (provincias en China): sistemas en
+        azoteas que emiten micro-gotas de agua a alta presión, enfriando el
+        aire por evaporación --- reducción reportada de 5--8$\,^\circ$C.
+    \item \textbf{Refrigeración radiativa} (Hong Kong): materiales que
+        expulsan calor de edificios hacia el exterior mediante radiación
+        infrarroja.
+    \item \textbf{Estructuras de sombra retráctiles} (Corea, Shanghai):
+        sobre calles peatonales, desplegadas en verano, guardadas en
+        invierno --- generan pasillos de sombra continua.
+    \item \textbf{Techos blancos y arquitectura de sombra}: pórticos y
+        orientación estratégica de plazas para maximizar sombra natural.
+    \item Puntos de hidratación en zonas de alto tránsito peatonal de
+        adultos mayores.
+\end{itemize}
+
+\textbf{Diseño del análisis propuesto}: usando el mapa de riesgo simulado
+(las zonas de mayor \texttt{heat\_load} acumulado, ``zonas rojas''),
+proponer ubicaciones candidatas para cada intervención, aplicar su efecto
+conocido (ej.\ $-5\,^\circ$C localizado $\to$ reducción de
+$\mathrm{WBGT}_{\mathrm{eff}}$ en las rutas que cruzan esa zona) y volver a
+consultar el emulador para estimar: (i) cuántas zonas dejan de estar en
+riesgo alto, (ii) reducción del riesgo total agregado, (iii) comparación de
+costo-efectividad entre estrategias. Esto conecta directamente con la
+propuesta original de tesis (sección de aplicabilidad para toma de
+decisiones) y es un caso de uso concreto de \emph{scenario recycling}: cada
+consulta ``qué pasa si pongo sombra acá'' se resuelve en milisegundos, no
+recorriendo el ABM completo.
+
+% ══════════════════════════════════════════════════════════════════════════
+\section{Discusión}
+\todo[inline,color=orange!40]{Pendiente.}
+% ══════════════════════════════════════════════════════════════════════════
+
+% ══════════════════════════════════════════════════════════════════════════
+\section{Conclusión y trabajo futuro}
+% ══════════════════════════════════════════════════════════════════════════
+
+\begin{itemize}[leftmargin=*]
+    \item Banco completo ($\sim$300 escenarios) vía SLURM \emph{job arrays}
+        en el cluster.
+    \item GP multi-salida con coregionalización (en vez de 12 GPs
+        independientes) --- ver \emph{Gaussian Process Latent Factor
+        Regression for Low-Data Problems} (2026).
+    \item Validación espacial a resolución de establecimiento con datos de
+        fecha exacta (pendiente respuesta de solicitud de Transparencia).
+    \item Validación formal contra experto.
+    \item API + visor para consulta en tiempo real de pronósticos DMC.
+\end{itemize}
+
+% ══════════════════════════════════════════════════════════════════════════
+\section*{Notas internas --- checklist para la próxima reunión (28 ago)}
+{\small
+\textbf{De la reunión 31 jul:}
+\begin{itemize}[leftmargin=*]
+    \item[$\square$] Buscar métricas adicionales de impacto de olas de calor
+        en literatura (pedido directo de la profesora)
+    \item[$\square$] Confirmar citas exactas de Sacks (1989) y Kennedy \&
+        O'Hagan (2001)
+    \item[$\square$] Avanzar validación por urgencias con los tips de
+        Cristian
+    \item[$\square$] Enviar solicitud de Transparencia --- \textbf{aún sin
+        enviar según reunión 14 ago}
+    \item[$\square$] Diseñar el instrumento de validación por experto
+        (formulario + corridas de ejemplo)
+\end{itemize}
+
+\textbf{Nuevo de la reunión 14 ago:}
+\begin{itemize}[leftmargin=*]
+    \item[$\square$] \textbf{Migrar el paper a inglés} (escribir directo en
+        inglés de ahora en adelante)
+    \item[$\square$] Diseñar y correr el \textbf{estudio de ablación}
+        (ver sección de ablación --- candidatos ya propuestos)
+    \item[$\boxminus$] Gráfico tiempo de ejecución vs.\ número de agentes ---
+        \textbf{datos ya obtenidos hoy}, falta la figura
+    \item[$\square$] Prueba estadística formal (test $z$ o similar) sobre la
+        diferencia de skill del benchmark GP vs.\ alternativas
+    \item[$\square$] Esbozar el capítulo de \textbf{análisis de escenarios de
+        mitigación} (sección nueva agregada --- shade structures,
+        nebulización, puntos de hidratación; usar el emulador para estimar
+        efecto de cada intervención)
+    \item[$\square$] Evaluar si medir consumo de RAM como métrica adicional
+        (sugerencia de la profesora --- probablemente no relevante a esta
+        escala, pero revisar si crece con más agentes)
+    \item[$\square$] Revisar si el estudio de Cristian García (nivel
+        regional, olas de calor) es citable --- confirmó conclusiones
+        macro alineadas con las nuestras
+    \item[$\square$] Completar secciones de Resultados y Discusión
+\end{itemize}
+}
+
+\end{document}
